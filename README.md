@@ -103,6 +103,8 @@ curl -s -X POST http://127.0.0.1:8092/open     # 202 immediately; opens in the b
 | `AUTA_MONITOR_ID`, `AUTA_MONITOR_EXT` | – | Monitor DB id and SIP extension. Auto-discovered from `GET /monitor` if unset. |
 | `AUTA_PLATE_NUMBER` | – | Street-panel number. Auto-discovered from `GET /plate` if unset. |
 | `AUTA_BRIDGE_HOST`/`AUTA_BRIDGE_PORT` | – | Where the bridge listens. Default `127.0.0.1:8092`. |
+| `AUTA_MONITOR_IP` | – | Monitor's LAN IP. Enables the optional keepalive / self-heal ([see below](#monitor-keeps-going-unavailable-optional-keepalive)). Off if unset. |
+| `AUTA_KEEPALIVE_INTERVAL` | – | Seconds between keepalive nudges when `AUTA_MONITOR_IP` is set. Default `120`. |
 
 If you have **several monitors or panels**, discovery picks the first of each; set the
 `AUTA_MONITOR_*`/`AUTA_PLATE_NUMBER` overrides to choose.
@@ -146,6 +148,28 @@ You get:
   default). Reset the accessory in the Home app if a stale state is cached.
 - **Everything returns `503`** and even `dry` fails right away → your PBX host differs. The
   monitor's registrar is the value in `AUTA_PBX`; for most installs it's `ast-ssl.pro.auta.es`.
+
+### Monitor keeps going "unavailable" (optional keepalive)
+
+Some ONEX monitors run an old firmware whose registration to the cloud PBX goes **stale after a
+few idle minutes**: the monitor still *thinks* it's registered (the app and its own status say so),
+but the PBX can no longer reach it, so opens — and the **official app** too — start failing until the
+monitor is rebooted. A reboot only helps because it forces a fresh SIP `REGISTER`.
+
+If you set **`AUTA_MONITOR_IP`** (your monitor's LAN IP), the bridge fixes this itself, no reboots:
+
+- a background **keepalive** nudges the monitor every `AUTA_KEEPALIVE_INTERVAL` seconds (default 120)
+  — it makes the monitor's own SIP client send a tiny `OPTIONS` to the registrar, which keeps the
+  PBX route warm (this also keeps the **app** working);
+- and on a failed open it **self-heals**: it nudges the monitor and retries the open once.
+
+Give the monitor a **static or DHCP-reserved IP** before you set this, so `AUTA_MONITOR_IP` stays
+valid — if the monitor's address later changes, the nudges silently miss and the route goes stale
+again. (Some monitors also need a reboot to rebind after their IP changes.)
+
+This works by talking to the monitor's **local baresip control port** (`:8000`), which is **open and
+unauthenticated** on these monitors. It's off unless you set `AUTA_MONITOR_IP`. Only enable it on a
+network you trust, and keep the intercom on an isolated IoT VLAN.
 
 ## Notes & safety
 

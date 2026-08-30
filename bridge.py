@@ -39,6 +39,9 @@ PASS = os.environ["AUTA_PASS"]
 # The registrar the monitor/panel actually use. NOT the domain the API reports
 # (that is the API host); discovered empirically to be Auta's production FreePBX.
 PBX = os.environ.get("AUTA_PBX", "ast-ssl.pro.auta.es")
+# Optional: the monitor's LAN IP. If set, on a failed open (the monitor's cloud route
+# went stale) the bridge nudges its baresip control port to refresh the route and retries.
+MONITOR_IP = os.environ.get("AUTA_MONITOR_IP", "")
 HOST = os.environ.get("AUTA_BRIDGE_HOST", "127.0.0.1")
 PORT = int(os.environ.get("AUTA_BRIDGE_PORT", "8092"))
 
@@ -128,6 +131,19 @@ def plate_call(monitor_id, plate):
     return api(f"/monitor/{monitor_id}/plate_call", body, "PUT", ctype="application/json")
 
 
+def nudge_monitor():
+    """Refresh the monitor's (possibly stale) cloud registration by making its baresip send
+    a SIP OPTIONS to the registrar, via its local HTTP control port. Returns True if attempted."""
+    if not MONITOR_IP:
+        return False
+    try:
+        cmd = urllib.parse.quote("/options sip:" + PBX)
+        urllib.request.urlopen(f"http://{MONITOR_IP}:8000/?{cmd}", timeout=5).read()
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def do_open(dry=False):
     t0 = time.time()
     cfg = discover()
@@ -152,16 +168,27 @@ def do_open(dry=False):
         "DO_REGISTER": "1",
         "SEND_DTMF": "0" if dry else "1",
     })
-    p = subprocess.run(
-        [sys.executable, os.path.join(os.path.dirname(__file__), "sip_open.py")],
-        env=env, capture_output=True, text=True, timeout=60,
-    )
-    out = p.stdout + p.stderr
+    def run_sip():
+        p = subprocess.run(
+            [sys.executable, os.path.join(os.path.dirname(__file__), "sip_open.py")],
+            env=env, capture_output=True, text=True, timeout=60,
+        )
+        out = p.stdout + p.stderr
+        return ("RESULT confirmed=True" in out), (not dry and "dtmf_sent=True" in out)
+
+    connected, dtmf = run_sip()
+    recovered = False
+    if not connected and not dry and nudge_monitor():
+        # The monitor's cloud route was likely stale; the nudge refreshed it — retry once.
+        recovered = True
+        time.sleep(3)
+        connected, dtmf = run_sip()
     return {
         "ok": True,
-        "connected": "RESULT confirmed=True" in out,
-        "opened": None if dry else ("dtmf_sent=True" in out),
+        "connected": connected,
+        "opened": None if dry else dtmf,
         "dry": dry,
+        "recovered": recovered,
         "took_s": round(time.time() - t0, 1),
     }
 
@@ -225,8 +252,23 @@ def warmup():
         log("warmup failed (will retry on first open):", repr(e))
 
 
+def keepalive_loop():
+    """Keep the monitor's cloud registration alive: its old firmware lets the PBX route go
+    stale after a few minutes of no SIP traffic, so periodically nudge it (SIP OPTIONS via its
+    local control port). Needs AUTA_MONITOR_IP; interval AUTA_KEEPALIVE_INTERVAL seconds."""
+    if not MONITOR_IP:
+        log("keepalive off (set AUTA_MONITOR_IP to enable)")
+        return
+    interval = int(os.environ.get("AUTA_KEEPALIVE_INTERVAL", "120"))
+    log(f"keepalive on: nudging monitor {MONITOR_IP} every {interval}s")
+    while True:
+        time.sleep(interval)
+        nudge_monitor()
+
+
 def main():
     threading.Thread(target=warmup, daemon=True).start()
+    threading.Thread(target=keepalive_loop, daemon=True).start()
     log(f"listening on http://{HOST}:{PORT} (pbx {PBX})")
     ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
 
