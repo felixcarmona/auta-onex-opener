@@ -105,6 +105,9 @@ curl -s -X POST http://127.0.0.1:8092/open     # 202 immediately; opens in the b
 | `AUTA_BRIDGE_HOST`/`AUTA_BRIDGE_PORT` | – | Where the bridge listens. Default `127.0.0.1:8092`. |
 | `AUTA_MONITOR_IP` | – | Monitor's LAN IP. Enables the optional keepalive / self-heal ([see below](#monitor-keeps-going-unavailable-optional-keepalive)). Off if unset. |
 | `AUTA_KEEPALIVE_INTERVAL` | – | Seconds between keepalive nudges when `AUTA_MONITOR_IP` is set. Default `120`. |
+| `AUTA_RING_WATCH` | – | Set to `1` to enable the optional ring notification ([see below](#ring-notification-optional)). Off by default; needs `AUTA_MONITOR_IP` + `AUTA_RING_WEBHOOK`. |
+| `AUTA_RING_INTERVAL` | – | Seconds between ring polls (serial, never overlapping). Default `1`. |
+| `AUTA_RING_WEBHOOK` | – | Home Assistant webhook URL the bridge POSTs to on a ring. E.g. `http://127.0.0.1:8123/api/webhook/auta_doorbell`. |
 
 If you have **several monitors or panels**, discovery picks the first of each; set the
 `AUTA_MONITOR_*`/`AUTA_PLATE_NUMBER` overrides to choose.
@@ -137,6 +140,44 @@ You get:
   tile never sticks "on"). Expose this one in the **HomeKit bridge** to say *"Hey Siri, turn
   on Open Door"*.
 - `rest_command.auta_open_door` / `auta_test_door` for automations.
+- `binary_sensor.doorbell` — ON while someone is ringing the street panel, **if** you enable the
+  optional [ring notification](#ring-notification-optional). Expose it in the HomeKit bridge and turn
+  on its notifications in the Home app to get a push when someone rings.
+
+## Ring notification (optional)
+
+Get a **push notification when someone rings** — in the Home app, or any Home Assistant
+notification channel. It's **off by default**; all detection is **local** and never touches the
+cloud.
+
+How it works: your monitor receives the panel's call over SIP, and its baresip exposes a local
+control port that lists active calls. When you set `AUTA_RING_WATCH=1` (plus `AUTA_MONITOR_IP` and
+`AUTA_RING_WEBHOOK`), the bridge:
+
+- polls the monitor's `/listcalls` every `AUTA_RING_INTERVAL` seconds, **strictly serial** — it never
+  starts the next poll until the previous one returns, so a slow/old monitor is never hit with
+  overlapping requests;
+- treats an incoming call from **any caller other than your own SIP extension** as a ring (so your
+  own opens don't trigger it), and POSTs `{"ringing": true/false}` to the HA webhook on each edge.
+
+On the HA side, the bundled package's `auta_doorbell` webhook automation flips
+`input_boolean.door_ring`, which `binary_sensor.doorbell` (an occupancy sensor) mirrors. Expose that
+sensor in the HomeKit bridge, then in the Home app open the accessory → settings → **Notifications**
+and turn them on.
+
+**Enable it:**
+
+1. In `.env`: set `AUTA_MONITOR_IP`, `AUTA_RING_WATCH=1`, and
+   `AUTA_RING_WEBHOOK=http://<your-ha>:8123/api/webhook/auta_doorbell` (the id must match the
+   automation's `webhook_id`). Restart the bridge. Its log should say `ring watch on: …`.
+2. Expose `binary_sensor.doorbell` in the HomeKit bridge and enable its notifications in the Home app.
+
+**Turn it off:** unset `AUTA_RING_WATCH` (or set it to `0`) and restart the bridge — the watcher
+won't run and nothing is polled. You can also just turn off notifications for the accessory in the
+Home app, or delete the `auta_doorbell` automation from the package.
+
+**Security:** like the keepalive, this uses the monitor's **open, unauthenticated** local control
+port — keep the intercom on an isolated IoT VLAN.
 
 ## Troubleshooting
 

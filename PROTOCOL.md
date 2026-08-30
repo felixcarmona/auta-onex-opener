@@ -74,6 +74,32 @@ via **SIP INFO** (`pjsua2` `sendDtmf` with `PJSUA_DTMF_METHOD_SIP_INFO`); RFC283
 negotiated `telephone-event`, which didn't come up in this setup, so SIP INFO is used and
 works.
 
+## Detecting a ring — incoming call on the monitor
+
+When a visitor presses your button on the street panel, the panel places a SIP call that rings
+the monitor. There's no cloud webhook for that, but the monitor's local baresip control port
+(the same `:8000` used for the registrar) can list active calls **locally, with no cloud traffic**:
+
+```
+GET http://<monitor-ip>:8000/?%2Flistcalls
+--- Active calls (0) ---                     # idle
+--- Active calls (1) ---                     # a call is up
+> [line 1]  0:00:00   INCOMING   sip:<caller>@<ip>
+```
+
+An unanswered *ringing* call already shows up here (state `0:00:00`, `INCOMING`), so you can poll
+`/listcalls` to know when someone is ringing. Two things make it reliable:
+
+- **Tell a real ring from your own open.** Your own open call also appears as `INCOMING`, but from
+  *your* SIP extension (e.g. `sip:3685@…`). So treat as a ring only an `INCOMING` call whose caller
+  is **not** your extension.
+- **Poll strictly serially.** These monitors are old and fragile under load; issue the next poll only
+  after the previous one returns, so requests never stack up. A ~1 s cadence catches a ring long
+  before it times out, and a plain local `GET` is cheap (unlike SIP call attempts, which are not).
+
+This is exactly what the bridge's optional ring watcher does (see the README) — poll `/listcalls`,
+ignore your own extension, and POST the on/off edges to a Home Assistant webhook.
+
 ## How this was reverse-engineered (procedure)
 
 1. **Locate the device & app.** Find the monitor on the network; grab the app,
