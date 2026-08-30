@@ -1,10 +1,19 @@
 # Home Assistant package for the Auta ONEX door opener via auta-bridge (http://127.0.0.1:8092).
 # Drop this in config/packages/ (enable packages: homeassistant: packages: !include_dir_named packages)
 # and restart Home Assistant. Then expose switch.open_door in the HomeKit bridge for Siri.
+#
+# The `door_ring` / `binary_sensor.doorbell` / `auta_doorbell` webhook automation at the bottom are
+# only used by the OPTIONAL ring notification (see the README). They are harmless if you don't enable
+# it, but you can delete that block if you never intend to use it.
 input_boolean:
   door_pulse:
     name: Door pulse
     icon: mdi:door-open
+  # ON while the street panel is ringing the monitor. Set by the bridge's ring watcher through the
+  # webhook automation below, and mirrored by binary_sensor.doorbell for the Home app.
+  door_ring:
+    name: Door ring
+    icon: mdi:bell-ring
 
 rest_command:
   auta_open_door:
@@ -49,3 +58,42 @@ template:
         icon: mdi:door-open
         press:
           - action: rest_command.auta_open_door
+  - binary_sensor:
+      # Doorbell: ON while someone is ringing the street panel (the bridge's ring watcher detects the
+      # incoming call on the monitor and flips input_boolean.door_ring via the webhook below). Expose
+      # this entity in the HomeKit bridge and turn on its notifications in the Home app to get a push
+      # when someone rings. Only meaningful with the optional ring watcher enabled (see the README).
+      - name: Doorbell
+        unique_id: auta_doorbell
+        device_class: occupancy
+        state: "{{ is_state('input_boolean.door_ring', 'on') }}"
+
+# Optional ring notification: the bridge POSTs here whenever it detects or clears an incoming ring
+# (needs AUTA_RING_WATCH=1 and AUTA_RING_WEBHOOK pointing at this webhook). local_only means it only
+# accepts requests from your LAN. Delete this automation if you don't use the ring notification.
+automation:
+  - id: auta_doorbell_webhook
+    alias: Auta doorbell (ring webhook)
+    mode: restart
+    trigger:
+      - platform: webhook
+        webhook_id: auta_doorbell
+        allowed_methods:
+          - POST
+        local_only: true
+    action:
+      - choose:
+          - conditions: "{{ trigger.json.ringing }}"
+            sequence:
+              - action: input_boolean.turn_on
+                target:
+                  entity_id: input_boolean.door_ring
+              - delay:
+                  minutes: 2          # safety auto-off if the "cleared" webhook is ever missed
+              - action: input_boolean.turn_off
+                target:
+                  entity_id: input_boolean.door_ring
+        default:
+          - action: input_boolean.turn_off
+            target:
+              entity_id: input_boolean.door_ring
