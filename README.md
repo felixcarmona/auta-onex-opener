@@ -162,15 +162,19 @@ control port that lists active calls. When you set `AUTA_RING_WATCH=1` (plus `AU
 
 On the HA side, the bundled package's `auta_doorbell` webhook automation flips
 `input_boolean.door_ring`, which `binary_sensor.doorbell` (an occupancy sensor) mirrors. Expose that
-sensor in the HomeKit bridge, then in the Home app open the accessory → settings → **Notifications**
-and turn them on.
+sensor in the HomeKit bridge. Note an occupancy sensor **doesn't appear as a tile** in the Apple Home
+app — it lives under the home's sensor list. Turn its push on at **⋯ (top-right) → Home Settings →
+Sensors → Doorbell → Notifications** (pick *Always*, or a time/people condition).
 
 **Enable it:**
 
 1. In `.env`: set `AUTA_MONITOR_IP`, `AUTA_RING_WATCH=1`, and
    `AUTA_RING_WEBHOOK=http://<your-ha>:8123/api/webhook/auta_doorbell` (the id must match the
    automation's `webhook_id`). Restart the bridge. Its log should say `ring watch on: …`.
-2. Expose `binary_sensor.doorbell` in the HomeKit bridge and enable its notifications in the Home app.
+2. Expose `binary_sensor.doorbell` in the HomeKit bridge. It's an occupancy sensor, so in the Apple
+   Home app it won't be a tile — enable its push at **⋯ (top-right) → Home Settings → Sensors →
+   Doorbell → Notifications**. (New bridge accessory not showing yet? Fully close and reopen the Home
+   app, or reload the HomeKit bridge in HA.)
 
 **Turn it off:** unset `AUTA_RING_WATCH` (or set it to `0`) and restart the bridge — the watcher
 won't run and nothing is polled. You can also just turn off notifications for the accessory in the
