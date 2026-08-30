@@ -19,13 +19,16 @@ button/switch you can press or say *"Hey Siri, turn on Open Door"*.
 ## How it works
 
 ```
+At startup (once, then cached):
+  auta-bridge ── login → JWT  +  auto-discover  GET /SIP, /monitor, /plate   (onex.auta.es API)
+                 └ cached & warmed; JWT refreshed on 401, discovery re-run if it goes stale
+
+On each open:
 Home Assistant ──POST /open──▶ auta-bridge (this service)
-                                   │ 1. login            → JWT           (onex.auta.es API)
-                                   │ 2. auto-discover     GET /SIP, /monitor, /plate
-                                   │ 3. PUT plate_call    arm the panel
-                                   │ 4. SIP REGISTER + CALL sip:<monitor_ext>@PBX
+                                   │ 1. PUT plate_call    arm the panel        (cached JWT)
+                                   │ 2. SIP REGISTER + CALL sip:<monitor_ext>@PBX
                                    │    with header  X-PlateNumber: <n>
-                                   │ 5. on answer → DTMF '1'  (open)      via SIP INFO
+                                   │ 3. on answer → DTMF '1'  (open)      via SIP INFO
                                    ▼
                           Auta cloud PBX (ast-ssl.pro.auta.es) ──▶ your monitor ──bus──▶ door relay
 ```
@@ -43,6 +46,13 @@ Key facts that make it work (and that took some digging, see
 
 The SIP part runs in an isolated subprocess (`sip_open.py`, using
 [pjsua2](https://github.com/pjsip/pjproject)) so a SIP hiccup can't crash the service.
+
+**Caching & resilience.** Login and discovery run **once at startup** and are cached, so a
+normal open is just `plate_call` + the SIP call — no login/discovery round-trips. The JWT is
+re-fetched automatically if it expires (a `401`), and discovery is re-run if it goes stale
+(the monitor/panel changed). If the bridge starts while the monitor is offline it still
+caches fine (login and discovery are cloud calls, independent of the monitor); opens then
+fail cleanly with `503` until the monitor is back, and work again with no restart.
 
 ---
 

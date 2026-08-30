@@ -26,6 +26,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -49,6 +50,8 @@ OV_MON_EXT = os.environ.get("AUTA_MONITOR_EXT", "")
 OV_PLATE = os.environ.get("AUTA_PLATE_NUMBER", "")
 
 _cache = {}
+_token = None
+_token_lock = threading.Lock()
 
 
 def log(*a):
@@ -77,15 +80,38 @@ def login():
     return d["response"]["Token"]
 
 
-def discover(token):
+def get_token(force=False):
+    """Cached JWT; (re-)logs in on first use or when forced."""
+    global _token
+    with _token_lock:
+        if force or not _token:
+            _token = login()
+            log("logged in (token refreshed)" if force else "logged in")
+        return _token
+
+
+def api(path, data=None, method=None, ctype=None):
+    """Authenticated request that re-logs in once and retries on an expired token (401/403)."""
+    for attempt in range(2):
+        try:
+            return _req(path, data=data, method=method, token=get_token(force=attempt == 1), ctype=ctype)
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 403) and attempt == 0:
+                continue
+            raise
+
+
+def invalidate_discovery():
+    _cache.clear()
+
+
+def discover(force=False):
     """Fill in SIP account, monitor and panel from the API (cached). Env overrides win."""
-    if _cache:
+    if _cache and not force:
         return _cache
-    sip = _req("/SIP", token=token)["response"]["SIP"]
-    mons = _req("/monitor", token=token)["response"]["Monitors"]
-    plates = _req("/plate", token=token)["response"]["Plates"]
-    mon = mons[0]
-    plate = plates[0]
+    sip = api("/SIP")["response"]["SIP"]
+    mon = api("/monitor")["response"]["Monitors"][0]
+    plate = api("/plate")["response"]["Plates"][0]
     _cache.update({
         "sip_ext": OV_SIP_EXT or str(sip["Extension"]),
         "sip_pass": OV_SIP_PASS or sip["Password"],
@@ -97,16 +123,25 @@ def discover(token):
     return _cache
 
 
-def plate_call(token, monitor_id, plate):
+def plate_call(monitor_id, plate):
     body = json.dumps({"PlateCall": str(plate)}).encode()
-    return _req(f"/monitor/{monitor_id}/plate_call", body, "PUT", token=token, ctype="application/json")
+    return api(f"/monitor/{monitor_id}/plate_call", body, "PUT", ctype="application/json")
 
 
 def do_open(dry=False):
     t0 = time.time()
-    token = login()
-    cfg = discover(token)
-    plate_call(token, cfg["monitor_id"], cfg["plate"])
+    cfg = discover()
+    try:
+        plate_call(cfg["monitor_id"], cfg["plate"])
+    except urllib.error.HTTPError as e:
+        # Stale discovery (monitor/panel changed)? Re-discover once and retry.
+        if e.code in (400, 404, 409, 422):
+            log("plate_call failed", e.code, "- re-discovering")
+            invalidate_discovery()
+            cfg = discover(force=True)
+            plate_call(cfg["monitor_id"], cfg["plate"])
+        else:
+            raise
     env = dict(os.environ)
     env.update({
         "AUTA_SIP_EXTENSION": cfg["sip_ext"],
@@ -178,7 +213,20 @@ class Handler(BaseHTTPRequestHandler):
         print("[auta]", self.address_string(), fmt % a, flush=True)
 
 
+def warmup():
+    """Prime the token + discovery cache at startup so the first open is fast and any
+    misconfiguration shows up in the log immediately. Best-effort: a failure here is not
+    fatal — the first /open retries lazily."""
+    try:
+        get_token()
+        discover()
+        log("warmup ok")
+    except Exception as e:  # noqa: BLE001
+        log("warmup failed (will retry on first open):", repr(e))
+
+
 def main():
+    threading.Thread(target=warmup, daemon=True).start()
     log(f"listening on http://{HOST}:{PORT} (pbx {PBX})")
     ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
 
