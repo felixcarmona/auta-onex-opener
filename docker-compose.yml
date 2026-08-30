@@ -1,0 +1,20 @@
+services:
+  auta-bridge:
+    build: .
+    image: auta-onex-opener
+    container_name: auta-bridge
+    # host network so it can reach the Auta cloud PBX and so Home Assistant
+    # (also host-networked) can reach it on 127.0.0.1. It only listens on localhost.
+    network_mode: host
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - AUTA_BRIDGE_HOST=127.0.0.1
+      - AUTA_BRIDGE_PORT=8092
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8092/health', timeout=5)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 20s

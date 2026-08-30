@@ -1,0 +1,51 @@
+# Home Assistant package for the Auta ONEX door opener via auta-bridge (http://127.0.0.1:8092).
+# Drop this in config/packages/ (enable packages: homeassistant: packages: !include_dir_named packages)
+# and restart Home Assistant. Then expose switch.open_door in the HomeKit bridge for Siri.
+input_boolean:
+  door_pulse:
+    name: Door pulse
+    icon: mdi:door-open
+
+rest_command:
+  auta_open_door:
+    url: http://127.0.0.1:8092/open        # fire-and-forget, returns immediately
+    method: POST
+    timeout: 15
+
+  auta_test_door:
+    url: http://127.0.0.1:8092/open?dry=1   # only checks the call connects, does NOT open
+    method: POST
+    timeout: 70
+
+switch:
+  - platform: template
+    switches:
+      open_door:
+        # Momentary, robust for HomeKit: opens the door and pulses on->off for 1s so the
+        # Home app tile registers a clean tap and never stays "on".
+        friendly_name: Open Door
+        unique_id: auta_open_door_switch
+        value_template: "{{ is_state('input_boolean.door_pulse', 'on') }}"
+        icon_template: mdi:door-open
+        turn_on:
+          - action: rest_command.auta_open_door
+          - action: input_boolean.turn_on
+            target:
+              entity_id: input_boolean.door_pulse
+          - delay:
+              seconds: 1
+          - action: input_boolean.turn_off
+            target:
+              entity_id: input_boolean.door_pulse
+        turn_off:
+          - action: input_boolean.turn_off
+            target:
+              entity_id: input_boolean.door_pulse
+
+template:
+  - button:
+      - name: Open door
+        unique_id: auta_open_door_button
+        icon: mdi:door-open
+        press:
+          - action: rest_command.auta_open_door
