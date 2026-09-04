@@ -97,9 +97,6 @@ An unanswered *ringing* call already shows up here (state `0:00:00`, `INCOMING`)
   after the previous one returns, so requests never stack up. A ~1 s cadence catches a ring long
   before it times out, and a plain local `GET` is cheap (unlike SIP call attempts, which are not).
 
-This is exactly what the bridge's optional ring watcher does (see the README) — poll `/listcalls`,
-ignore your own extension, and POST the on/off edges to a Home Assistant webhook.
-
 ## How this was reverse-engineered (procedure)
 
 1. **Locate the device & app.** Find the monitor on the network; grab the app,

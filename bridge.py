@@ -22,7 +22,6 @@ Endpoints (listens on 127.0.0.1:8092 by default):
 
 import json
 import os
-import re
 import subprocess
 import sys
 import threading
@@ -43,13 +42,6 @@ PBX = os.environ.get("AUTA_PBX", "ast-ssl.pro.auta.es")
 # Optional: the monitor's LAN IP. If set, on a failed open (the monitor's cloud route
 # went stale) the bridge nudges its baresip control port to refresh the route and retries.
 MONITOR_IP = os.environ.get("AUTA_MONITOR_IP", "")
-# Optional ring watcher: poll the monitor's local baresip /listcalls for an INCOMING call from
-# the street panel (any caller other than our own SIP extension) and POST it to a Home Assistant
-# webhook, so HA can raise a doorbell notification. All local — it never touches the cloud. Off
-# unless AUTA_RING_WATCH=1; also needs AUTA_MONITOR_IP and AUTA_RING_WEBHOOK (the HA webhook URL).
-RING_WATCH = os.environ.get("AUTA_RING_WATCH", "") == "1"
-RING_INTERVAL = float(os.environ.get("AUTA_RING_INTERVAL", "1.0"))
-RING_WEBHOOK = os.environ.get("AUTA_RING_WEBHOOK", "")
 HOST = os.environ.get("AUTA_BRIDGE_HOST", "127.0.0.1")
 PORT = int(os.environ.get("AUTA_BRIDGE_PORT", "8092"))
 
@@ -274,77 +266,9 @@ def keepalive_loop():
         nudge_monitor()
 
 
-_RING_RE = re.compile(r"INCOMING\s+sip:([^@\s]+)@", re.I)
-_ring_on = False
-
-
-def monitor_incoming_ring():
-    """Read the monitor's local baresip /listcalls and return the caller id of a real incoming
-    ring (the street panel), '' if there is no incoming call, or None on error. A call from our
-    own SIP extension (i.e. our own open) is not a ring, so it is ignored. Never raises."""
-    if not MONITOR_IP:
-        return None
-    try:
-        cmd = urllib.parse.quote("/listcalls")
-        with urllib.request.urlopen(f"http://{MONITOR_IP}:8000/?{cmd}",
-                                    timeout=max(2.0, RING_INTERVAL + 2.0)) as r:
-            txt = r.read().decode("latin-1", "replace")
-    except Exception:  # noqa: BLE001
-        return None
-    our_ext = _cache.get("sip_ext") or OV_SIP_EXT
-    for m in _RING_RE.finditer(txt):
-        caller = m.group(1)
-        if caller != our_ext:
-            return caller
-    return ""
-
-
-def notify_ring(ringing, caller=None):
-    if not RING_WEBHOOK:
-        return
-    try:
-        body = json.dumps({"ringing": bool(ringing), "caller": caller}).encode()
-        req = urllib.request.Request(RING_WEBHOOK, data=body, method="POST")
-        req.add_header("Content-Type", "application/json")
-        urllib.request.urlopen(req, timeout=5).read()
-    except Exception as e:  # noqa: BLE001
-        log("ring webhook error:", repr(e))
-
-
-def ring_watch_loop():
-    """Poll the monitor for an incoming ring once per RING_INTERVAL, strictly serial: never
-    issue the next poll until the previous one has returned, so a slow/old monitor is never
-    hit with overlapping requests. Fires the HA webhook on each on/off edge. Local-only."""
-    global _ring_on
-    if not (RING_WATCH and MONITOR_IP and RING_WEBHOOK):
-        log("ring watch off (needs AUTA_RING_WATCH=1, AUTA_MONITOR_IP, AUTA_RING_WEBHOOK)")
-        return
-    log(f"ring watch on: polling {MONITOR_IP} /listcalls every {RING_INTERVAL}s (serial)")
-    try:
-        discover()  # learn our own extension so we can ignore our own opens
-    except Exception:  # noqa: BLE001
-        pass
-    while True:
-        start = time.monotonic()
-        res = monitor_incoming_ring()
-        if res is None:
-            pass  # transient error / unknown: keep the current state
-        elif res and not _ring_on:
-            _ring_on = True
-            log("ring detected (caller", res, ")")
-            notify_ring(True, res)
-        elif res == "" and _ring_on:
-            _ring_on = False
-            log("ring cleared")
-            notify_ring(False)
-        # target cadence, but never overlap: if the poll itself took longer, go now
-        time.sleep(max(0.0, RING_INTERVAL - (time.monotonic() - start)))
-
-
 def main():
     threading.Thread(target=warmup, daemon=True).start()
     threading.Thread(target=keepalive_loop, daemon=True).start()
-    threading.Thread(target=ring_watch_loop, daemon=True).start()
     log(f"listening on http://{HOST}:{PORT} (pbx {PBX})")
     ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
 
