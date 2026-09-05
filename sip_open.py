@@ -22,6 +22,9 @@ DO_REGISTER = os.environ.get("DO_REGISTER", "1") == "1"
 PLATE = os.environ.get("PLATE", "1")
 DTMF = os.environ.get("DTMF", "1")
 SEND_DTMF = os.environ.get("SEND_DTMF", "1") == "1"
+# Offer a video m-line in the INVITE (needed so V4.1+ monitors auto-answer). On by default;
+# set AUTA_SIP_VIDEO=0 only if you run a pjsip built without video (older audio-only image).
+VIDEO = os.environ.get("AUTA_SIP_VIDEO", "1") == "1"
 PJSIP_LOG = os.environ.get("AUTA_PJSIP_LOG", "")  # optional full SIP trace to a file
 
 
@@ -96,13 +99,41 @@ def main():
     ep.transportCreate(pj.PJSIP_TRANSPORT_UDP, pj.TransportConfig())  # for a direct on-LAN INVITE
     ep.libStart()
     ep.audDevManager().setNullDev()  # no sound card in the container
-    log("endpoint started (TLS+UDP, null audio)")
+
+    # Offer VIDEO in the INVITE. The ONEX monitor is a *video* intercom, and since firmware
+    # V4.1 (2026-09) OnexGuiApp only auto-answers the on-demand "view door" call when the
+    # INVITE carries a video m-line (an audio-only offer stays at 180 Ringing forever). We
+    # never render or watch the stream — the offer alone is what makes the panel answer, and
+    # then the DTMF opens. Use the built-in colorbar generator as the capture device so pjsip
+    # has a source to (nominally) send without a real camera; no hardware needed.
+    cap_dev = -1
+    if VIDEO:
+        try:
+            vdm = ep.vidDevManager()
+            cap_dev = next((i for i in range(vdm.getDevCount())
+                            if vdm.getDevInfo(i).driver.lower().startswith("colorbar")), -1)
+            log(f"endpoint started (TLS+UDP, null audio, video offer; colorbar dev {cap_dev})")
+        except Exception as e:  # noqa: BLE001
+            log("video device probe failed (video still offered):", repr(e))
+    else:
+        log("endpoint started (TLS+UDP, null audio, audio-only offer)")
 
     acfg = pj.AccountConfig()
     acfg.idUri = f"sip:{EXT}@{DOM}"
     acfg.regConfig.registrarUri = f"sip:{DOM};transport=tls"
     acfg.sipConfig.authCreds.append(pj.AuthCredInfo("digest", "*", EXT, 0, PW))
     acfg.regConfig.registerOnAdd = DO_REGISTER
+    if VIDEO:
+        # Transmit our colorbar source, never pop up the incoming stream (headless container).
+        # pjsip logs a benign "PJMEDIA_EVID_NODEFDEV" when it wires up the negotiated video with
+        # no render device — harmless: the call still CONFIRMs and the DTMF (SIP INFO) still opens.
+        acfg.videoConfig.autoTransmitOutgoing = True
+        acfg.videoConfig.autoShowIncoming = False
+        if cap_dev >= 0:
+            try:
+                acfg.videoConfig.defaultCaptureDevice = cap_dev
+            except Exception as e:  # noqa: BLE001
+                log("could not pin capture device (video still offered):", repr(e))
     acc = Account()
     acc.create(acfg)
 
@@ -119,6 +150,9 @@ def main():
 
     call = Call(acc)
     prm = pj.CallOpParam(True)
+    if VIDEO:
+        prm.opt.audioCount = 1
+        prm.opt.videoCount = 1  # emit the video m-line V4.1 requires to auto-answer
     h = pj.SipHeader()
     h.hName = "X-PlateNumber"
     h.hValue = str(PLATE)

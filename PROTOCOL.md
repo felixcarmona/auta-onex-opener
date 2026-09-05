@@ -37,8 +37,19 @@ bus command that fires the door relay. The app can also start that call **on dem
 - The on-demand "view door" flow (from the app) is:
   1. `PUT /monitor/{id}/plate_call {"PlateCall": "<panel_number>"}`.
   2. SIP INVITE to **`sip:<monitor_ext>@<pbx>`** with a custom header **`X-PlateNumber: <panel_number>`**
-     (in the app: `startVideoCall("<monitor_ext>?X-PlateNumber=<n>")`).
+     (in the app: `startVideoCall("<monitor_ext>?X-PlateNumber=<n>")`). The app places a **video**
+     call: `startWithVideo = true`, so the SDP offer carries an `m=video` line.
   3. The PBX bridges to the panel; the panel answers (`200 OK`), video/audio flow.
+
+> **The offer must include video (firmware V4.1+).** The `startVideoCall` above is not incidental.
+> Up to the Dec‑2025 firmware the monitor auto‑answered an audio‑only INVITE; the **V4.1 update
+> (binary `063c1a5`, installed 2026‑09‑01) only auto‑answers when the INVITE offers video** — an
+> audio‑only offer sits at `180 Ringing` and never sends `200 OK`, so the in‑call DTMF never
+> happens. Confirmed both ways: the official app (video call) reaches `ESTABLISHED`, and a
+> pjsip client offering `m=audio`+`m=video` reaches `CONFIRMED` where the same client audio‑only
+> stays ringing. You don't have to send real frames — a dummy/colorbar video source in the offer
+> is enough; the panel answers, then DTMF `1` opens. This is a pure cloud/SIP path, no access to
+> the monitor's LAN needed.
 
 ### The PBX gotcha (the source of endless `503`s)
 

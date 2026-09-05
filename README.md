@@ -41,6 +41,11 @@ Key facts that make it work (and that took some digging, see
 - The call must go to the **real PBX `ast-ssl.pro.auta.es`**, *not* the host the API reports
   as your SIP "domain" (that host is the API front-end and returns `503`).
 - The panel is selected with a custom SIP header **`X-PlateNumber`** on the INVITE.
+- The INVITE must **offer video** (an `m=video` line). The ONEX is a video intercom, and since
+  firmware **V4.1** (2026‑09) the monitor only auto‑answers the on‑demand call when video is
+  offered; an audio‑only INVITE just rings forever. The bridge offers a dummy (colorbar) video
+  stream — it never renders anything, the offer alone is what makes the panel pick up. This is
+  why the image builds pjsip **with** video.
 - The tone is sent over **SIP INFO** (pjsua2's RFC2833 path isn't negotiated here).
 - Your monitor must be **online and registered** on the PBX (it's the SIP↔door-bus gateway).
 
